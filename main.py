@@ -5,26 +5,43 @@ import os
 import json
 import logging
 from datetime import datetime
+import sys
 
-# --- 配置日志输出 ---
+# 1. 定义重定向类
+class StreamToLogger:
+    """
+    将 sys.stdout 或 sys.stderr 的输出转发到 logging 模块。
+    """
+    def __init__(self, logger, log_level):
+        self.logger = logger
+        self.log_level = log_level
+        self.linebuf = ''
+
+    def write(self, buf):
+        # 逐行处理输出，避免日志格式错乱
+        for line in buf.rstrip().splitlines():
+            self.logger.log(self.log_level, line.rstrip())
+
+    def flush(self):
+        pass
+
+# 2. 修改 setup_logging 函数
 def setup_logging():
-    """配置日志系统的最佳实践：同时输出到控制台和文件"""
     logger = logging.getLogger("YeQuant")
-    logger.setLevel(logging.DEBUG)  # 设置总级别为 DEBUG
+    logger.setLevel(logging.DEBUG)
 
-    # 防止重复添加 Handler
     if not logger.handlers:
         formatter = logging.Formatter(
             '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S'
         )
 
-        # 1. 控制台 Handler (通常显示 INFO 及以上)
-        ch = logging.StreamHandler()
+        # 重要：控制台 Handler 必须使用系统原始的 __stdout__
+        # 否则会陷入“stdout -> logger -> stdout”的死循环
+        ch = logging.StreamHandler(sys.__stdout__) 
         ch.setLevel(logging.INFO)
         ch.setFormatter(formatter)
 
-        # 2. 文件 Handler (记录 DEBUG 级别的详细日志)
         fh = logging.FileHandler("YeQuant_running.log", encoding='utf-8')
         fh.setLevel(logging.DEBUG)
         fh.setFormatter(formatter)
@@ -34,7 +51,13 @@ def setup_logging():
     
     return logger
 
+# 3. 在程序入口处应用重定向
 logger = setup_logging()
+
+# 将所有的 print (stdout) 重定向到 INFO 级别日志
+sys.stdout = StreamToLogger(logger, logging.INFO)
+# 将所有的报错 (stderr) 重定向到 ERROR 级别日志
+sys.stderr = StreamToLogger(logger, logging.ERROR)
 
 # --- 1. 配置信息加载 ---
 try:
@@ -52,7 +75,7 @@ except Exception as e:
 # --- 配置 ---
 DB_FILE = "A_Share_Base_Data.db"
 FEATHER_DIR = "feather_cache"
-START_DATE = 20250101
+START_DATE = 20130101
 END_DATE = int(datetime.now().strftime("%Y%m%d"))
 LOCAL_CACHE = os.path.join(os.getcwd(), "AmazingData_cache//")
 
@@ -154,7 +177,7 @@ def run_pipeline(is_test=True):
         info_data = ad.InfoData()
         
         all_codes = base_data.get_code_list(security_type='EXTRA_STOCK_A_SH_SZ')
-        logger.info(f"获取全量 A 股代码成功，共: {len(all_codes)} 只")
+        logger.info(f"获取全量沪深 A 股代码成功，共: {len(all_codes)} 只")
 
         calendar = base_data.get_calendar(market='SH') 
         market_data = ad.MarketData(calendar) 
@@ -185,27 +208,27 @@ def run_pipeline(is_test=True):
                 
                 try:
                     # 归档至 SQL
-                    # 1. 存入原始行情数据
-                df_raw = kline_dict[code].reset_index()
-                df_raw['kline_time'] = pd.to_datetime(df_raw['kline_time']).dt.strftime('%Y-%m-%d')
-                df_raw['code'] = code
-                df_raw[['code', 'kline_time', 'open', 'high', 'low', 'close', 'volume', 'amount']].to_sql(
-                    'daily_klines_raw', conn, if_exists='append', index=False
-                )
-                
-                # 2. 存入复权因子 (这里补上了！)
-                if df_factors is not None and code in df_factors.columns:
-                    # 从宽表中提取当前股票的因子
-                    df_f_sql = df_factors[[code]].copy().reset_index()
-                    df_f_sql.columns = ['trade_date', 'factor']
-                    df_f_sql['code'] = code
-                    df_f_sql['trade_date'] = pd.to_datetime(df_f_sql['trade_date']).dt.strftime('%Y-%m-%d')
+                        # 1. 存入原始行情数据
+                    df_raw = kline_dict[code].reset_index()
+                    df_raw['kline_time'] = pd.to_datetime(df_raw['kline_time']).dt.strftime('%Y-%m-%d')
+                    df_raw['code'] = code
+                    df_raw[['code', 'kline_time', 'open', 'high', 'low', 'close', 'volume', 'amount']].to_sql(
+                        'daily_klines_raw', conn, if_exists='append', index=False
+                    )
                     
-                    # 格式整理：code, trade_date, factor
-                    df_f_sql = df_f_sql[['code', 'trade_date', 'factor']].dropna()
-                              
-                    # 写入数据库
-                    df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
+                    # 2. 存入复权因子
+                    if df_factors is not None and code in df_factors.columns:
+                        # 从宽表中提取当前股票的因子
+                        df_f_sql = df_factors[[code]].copy().reset_index()
+                        df_f_sql.columns = ['trade_date', 'factor']
+                        df_f_sql['code'] = code
+                        df_f_sql['trade_date'] = pd.to_datetime(df_f_sql['trade_date']).dt.strftime('%Y-%m-%d')
+                        
+                        # 格式整理：code, trade_date, factor
+                        df_f_sql = df_f_sql[['code', 'trade_date', 'factor']].dropna()
+                                
+                        # 写入数据库
+                        df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
 
                     # 生成 Feather
                     feather_path = os.path.join(FEATHER_DIR, f"{code.replace('.', '_')}.feather")
@@ -228,5 +251,5 @@ def run_pipeline(is_test=True):
         logger.info("进程已正常退出。")
 
 if __name__ == "__main__":
-    run_pipeline(is_test=True)
+    run_pipeline(is_test=False)
     os._exit(0)
