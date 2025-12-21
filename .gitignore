@@ -46,6 +46,9 @@ secrets.yaml
 *回执单*
 *.json
 File/
+feather_cache/
+AmazingData_cache/
+test.py
 
 # Large Binary / Proprietary Wheels (Optional - comment out if you want to upload them)
 *.whl
