@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+.YeQuantVenv/
+venv/
+env/
+ENV/
+
+# Database
+*.db
+*.sqlite3
+
+# Local Config & Secrets
+# config.json (Temporarily allowed)
+.env
+secrets.yaml
+
+# Logs
+*.log
+
+# Sensitive User Files
+*.docx
+*.pdf
+*回执单*
+*.json
+File/
+
+# Large Binary / Proprietary Wheels (Optional - comment out if you want to upload them)
+*.whl
