@@ -185,12 +185,30 @@ def run_pipeline(is_test=True):
                 
                 try:
                     # 归档至 SQL
-                    df_raw = kline_dict[code].reset_index()
-                    df_raw['kline_time'] = pd.to_datetime(df_raw['kline_time']).dt.strftime('%Y-%m-%d')
-                    df_raw['code'] = code
-                    df_raw[['code', 'kline_time', 'open', 'high', 'low', 'close', 'volume', 'amount']].to_sql(
-                        'daily_klines_raw', conn, if_exists='append', index=False
-                    )
+                    # 1. 存入原始行情数据
+                df_raw = kline_dict[code].reset_index()
+                df_raw['kline_time'] = pd.to_datetime(df_raw['kline_time']).dt.strftime('%Y-%m-%d')
+                df_raw['code'] = code
+                df_raw[['code', 'kline_time', 'open', 'high', 'low', 'close', 'volume', 'amount']].to_sql(
+                    'daily_klines_raw', conn, if_exists='append', index=False
+                )
+                
+                # 2. 存入复权因子 (这里补上了！)
+                if df_factors is not None and code in df_factors.columns:
+                    # 从宽表中提取当前股票的因子
+                    df_f_sql = df_factors[[code]].copy().reset_index()
+                    df_f_sql.columns = ['trade_date', 'factor']
+                    df_f_sql['code'] = code
+                    df_f_sql['trade_date'] = pd.to_datetime(df_f_sql['trade_date']).dt.strftime('%Y-%m-%d')
+                    
+                    # 格式整理：code, trade_date, factor
+                    df_f_sql = df_f_sql[['code', 'trade_date', 'factor']].dropna()
+                    
+                    try:
+                        # 写入数据库，如果主键 (code, trade_date) 冲突则跳过
+                        df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
+                    except sqlite3.IntegrityError:
+                        pass # 增量运行或重复下载时忽略冲突
 
                     # 生成 Feather
                     feather_path = os.path.join(FEATHER_DIR, f"{code.replace('.', '_')}.feather")
