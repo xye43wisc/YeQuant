@@ -203,12 +203,9 @@ def run_pipeline(is_test=True):
                     
                     # 格式整理：code, trade_date, factor
                     df_f_sql = df_f_sql[['code', 'trade_date', 'factor']].dropna()
-                    
-                    try:
-                        # 写入数据库，如果主键 (code, trade_date) 冲突则跳过
-                        df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
-                    except sqlite3.IntegrityError:
-                        pass # 增量运行或重复下载时忽略冲突
+                              
+                    # 写入数据库
+                    df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
 
                     # 生成 Feather
                     feather_path = os.path.join(FEATHER_DIR, f"{code.replace('.', '_')}.feather")
