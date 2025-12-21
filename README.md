@@ -51,8 +51,8 @@ Before running the project, you must create a `config.json` file in the root dir
 {
     "USER": "YOUR_ACCOUNT_ID",
     "PWD": "YOUR_PASSWORD",
-    "IP": "101.230.159.234",
-    "PORT": 8600
+    "IP": "YOUR_IP",
+    "PORT": YOUR_PORT
 }
 ```
 
