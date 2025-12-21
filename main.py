@@ -202,9 +202,6 @@ def run_pipeline(is_test=True):
                 if kline_dict is None or code not in kline_dict:
                     logger.warning(f"跳过 {code}: 缺失 K 线数据")
                     continue
-                if df_factors is None or code not in df_factors.columns:
-                    logger.warning(f"跳过 {code}: 复权因子缺失")
-                    continue
                 
                 try:
                     # 归档至 SQL
@@ -229,7 +226,8 @@ def run_pipeline(is_test=True):
                                 
                         # 写入数据库
                         df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
-
+                    else:
+                        logger.warning(f"[{code}] 复权因子缺失，跳过 SQL 存储 (adjustment_factors)")
                     # 生成 Feather
                     feather_path = os.path.join(FEATHER_DIR, f"{code.replace('.', '_')}.feather")
                     process_and_save_feather(code, kline_dict[code], df_factors, df_status, feather_path)
