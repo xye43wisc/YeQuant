@@ -192,7 +192,7 @@ def run_pipeline(is_test=True):
             
             logger.info("正在请求 K 线、复权因子及证券状态数据...")
             kline_dict = market_data.query_kline(batch, START_DATE, END_DATE, ad.constant.Period.day.value) 
-            df_factors = base_data.get_backward_factor(batch, local_path=LOCAL_CACHE)
+            df_factors = base_data.get_backward_factor(batch, local_path=LOCAL_CACHE, is_local=False)
             df_status = info_data.get_history_stock_status(batch, local_path=LOCAL_CACHE) 
 
             processed_count = 0
