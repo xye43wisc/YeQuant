@@ -82,6 +82,24 @@ LOCAL_CACHE = os.path.join(os.getcwd(), "AmazingData_cache//")
 if not os.path.exists(FEATHER_DIR):
     os.makedirs(FEATHER_DIR)
 
+
+def get_all_latest_dates(conn):
+    """
+    获取数据库中每只股票对应的最新日期
+    返回字典: { '000001.SZ': 20231027, ... }
+    """
+    try:
+        cursor = conn.cursor()
+        # 使用 GROUP BY 获取每只股票的最大日期
+        query = "SELECT code, MAX(kline_time) FROM daily_klines_raw GROUP BY code"
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        # 将 '2023-10-27' 转换为整数 20231027 方便比较
+        return {row[0]: int(row[1].replace('-', '')) for row in rows if row[1]}
+    except Exception as e:
+        logger.warning(f"获取各标的最新日期失败: {e}")
+        return {}
+
 def init_base_database():
     """初始化基础数据库"""
     logger.info("正在初始化 SQLite 数据库...")
@@ -103,11 +121,27 @@ def init_base_database():
     conn.commit()
     return conn
 
-def process_and_save_feather(code, df_k, df_f, df_s, feather_path):
+def process_and_save_feather(code, df_new_k, df_f, df_s, feather_path):
     """构建理想的 Feather 列结构并保存"""
     logger.debug(f"开始处理标的 Feather 数据: {code}")
+
+    """增量处理并合并 Feather 数据"""
+    # 1. 如果已有缓存，先读取
+    df_old = None
+    if os.path.exists(feather_path):
+        try:
+            df_old = pd.read_feather(feather_path)
+            last_date = df_old['date'].max()
+            # 过滤掉新数据中已经存在于旧数据中的日期
+            df_new_k = df_new_k[pd.to_datetime(df_new_k.index) > pd.to_datetime(last_date)]
+        except Exception as e:
+            logger.error(f"读取旧 Feather 失败 {code}: {e}")
+
+    if df_new_k.empty:
+        logger.info(f"[{code}] 没有新数据需要追加到 Feather")
+        return df_old
     
-    df_k = df_k.copy()
+    df_k = df_new_k.copy()
     df_k['date'] = pd.to_datetime(df_k['kline_time']).dt.strftime('%Y-%m-%d')
     logger.debug(f"[{code}] K线行数: {len(df_k)}, 日期范围: {df_k['date'].min()} ~ {df_k['date'].max()}")
     
@@ -163,14 +197,29 @@ def process_and_save_feather(code, df_k, df_f, df_s, feather_path):
     ]
     
     df_final = df[[c for c in final_cols if c in df.columns]].reset_index(drop=True)
-    df_final.to_feather(feather_path)
-    logger.info(f"成功保存 Feather 缓存: {feather_path} (行数: {len(df_final)})")
-    return df_final
+
+    # 3. 合并
+    if df_old is not None:
+        # 为了保证 daily_return 计算正确，建议在合并后再统一计算一次 return
+        # 或者在处理 df_new_k 时，带上 df_old 的最后一行
+        df_combined = pd.concat([df_old, df_final], ignore_index=True).drop_duplicates(subset=['date'])
+        # 重新计算受前值影响的字段（如 daily_return）
+        df_combined['daily_return'] = df_combined['close_post'].pct_change()
+        df_combined.to_feather(feather_path)
+        logger.info(f"成功保存 Feather 缓存: {feather_path} (行数: {len(df_combined)})")
+        return df_combined
+    else:
+        df_final.to_feather(feather_path)
+        logger.info(f"成功保存 Feather 缓存: {feather_path} (行数: {len(df_final)})")
+        return df_final
 
 def run_pipeline(is_test=True):
     logger.info("正在尝试登录星耀数智平台...")
     ad.login(username=USER, password=PWD, host=IP, port=PORT)
     conn = init_base_database()
+
+    # 1. 预先获取全量进度字典
+    latest_dates_dict = get_all_latest_dates(conn)
     
     try:
         base_data = ad.BaseData()
@@ -182,62 +231,66 @@ def run_pipeline(is_test=True):
         calendar = base_data.get_calendar(market='SH') 
         market_data = ad.MarketData(calendar) 
 
-        target_codes = all_codes[:10] if is_test else all_codes
+        target_codes = all_codes[:60] if is_test else all_codes
         logger.info(f"运行模式: {'测试' if is_test else '全量'} | 计划处理数量: {len(target_codes)}")
 
         batch_size = 50
         for i in range(0, len(target_codes), batch_size):
             batch = target_codes[i : i + batch_size]
             logger.info(f"=== 开始处理批次: {i+1} 至 {min(i+batch_size, len(target_codes))} ===")
-            
-            logger.info("正在请求 K 线、复权因子及证券状态数据...")
-            kline_dict = market_data.query_kline(batch, START_DATE, END_DATE, ad.constant.Period.day.value) 
+
+            # 2. 找到当前批次中“最老”的日期作为本次请求的 START_DATE
+            # 如果某只股票没数据，则使用全局 START_DATE (20130101)
+            batch_min_date = min([latest_dates_dict.get(code, START_DATE) for code in batch])
+
+            logger.info(f"批次起点: {batch_min_date}，请求数据中...")
+            kline_dict = market_data.query_kline(batch, batch_min_date, END_DATE, ad.constant.Period.day.value)
+        
             df_factors = base_data.get_backward_factor(batch, local_path=LOCAL_CACHE, is_local=False)
             df_status = info_data.get_history_stock_status(batch, local_path=LOCAL_CACHE) 
 
             processed_count = 0
             for code in batch:
                 logger.debug(f"正在校验标的: {code}")
-                
                 if kline_dict is None or code not in kline_dict:
                     logger.warning(f"跳过 {code}: 缺失 K 线数据")
                     continue
-                
                 try:
-                    # 归档至 SQL
-                        # 1. 存入原始行情数据
+                    # 1. 过滤并写入 SQL
+                    # 获取该股在库里的最后日期，转为字符串格式用于对比
+                    last_date_val = latest_dates_dict.get(code, 0)
+                    last_date_str = datetime.strptime(str(last_date_val), '%Y%m%d').strftime('%Y-%m-%d') if last_date_val > 0 else "1900-01-01"
+                    
                     df_raw = kline_dict[code].reset_index()
                     df_raw['kline_time'] = pd.to_datetime(df_raw['kline_time']).dt.strftime('%Y-%m-%d')
-                    df_raw['code'] = code
-                    df_raw[['code', 'kline_time', 'open', 'high', 'low', 'close', 'volume', 'amount']].to_sql(
-                        'daily_klines_raw', conn, if_exists='append', index=False
-                    )
                     
-                    # 2. 存入复权因子
-                    if df_factors is not None and code in df_factors.columns:
-                        # 从宽表中提取当前股票的因子
-                        df_f_sql = df_factors[[code]].copy().reset_index()
-                        df_f_sql.columns = ['trade_date', 'factor']
-                        df_f_sql['code'] = code
-                        df_f_sql['trade_date'] = pd.to_datetime(df_f_sql['trade_date']).dt.strftime('%Y-%m-%d')
+                    # 只保存比数据库里更新的数据
+                    df_to_sql = df_raw[df_raw['kline_time'] > last_date_str].copy()
+                    
+                    if not df_to_sql.empty:
+                        df_to_sql['code'] = code
+                        df_to_sql[['code', 'kline_time', 'open', 'high', 'low', 'close', 'volume', 'amount']].to_sql(
+                            'daily_klines_raw', conn, if_exists='append', index=False
+                        )
                         
-                        # 格式整理：code, trade_date, factor
-                        df_f_sql = df_f_sql[['code', 'trade_date', 'factor']].dropna()
-                                
-                        # 写入数据库
-                        df_f_sql.to_sql('adjustment_factors', conn, if_exists='append', index=False)
-                    else:
-                        logger.warning(f"[{code}] 复权因子缺失，跳过 SQL 存储 (adjustment_factors)")
-                    # 生成 Feather
+                        # 处理复权因子存入 SQL (可选)
+                        if df_factors is not None and code in df_factors.columns:
+                            df_f_sql = df_factors[[code]].copy().reset_index()
+                            df_f_sql.columns = ['trade_date', 'factor']
+                            df_f_sql['code'] = code
+                            df_f_sql['trade_date'] = pd.to_datetime(df_f_sql['trade_date']).dt.strftime('%Y-%m-%d')
+                            df_f_sql = df_f_sql[df_f_sql['trade_date'] > last_date_str].dropna()
+                            df_f_sql[['code', 'trade_date', 'factor']].to_sql('adjustment_factors', conn, if_exists='append', index=False)
+
+                    # 2. 增量更新 Feather 文件
                     feather_path = os.path.join(FEATHER_DIR, f"{code.replace('.', '_')}.feather")
                     process_and_save_feather(code, kline_dict[code], df_factors, df_status, feather_path)
-                    processed_count += 1
                     
+                    processed_count += 1
                 except Exception as inner_e:
-                    logger.error(f"处理标的 {code} 时发生错误: {inner_e}")
+                    logger.error(f"处理标的 {code} 出错: {inner_e}")
 
-            logger.info(f"批次处理结束，成功率: {processed_count}/{len(batch)}")
-
+            logger.info(f"批次处理结束，更新成功: {processed_count}/{len(batch)}")
     except Exception:
         logger.exception("流程被中断，捕获到严重错误:")
     finally:
@@ -249,5 +302,5 @@ def run_pipeline(is_test=True):
         logger.info("进程已正常退出。")
 
 if __name__ == "__main__":
-    run_pipeline(is_test=False)
+    run_pipeline(is_test=True)
     os._exit(0)

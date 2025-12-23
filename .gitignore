@@ -33,6 +33,14 @@ ENV/
 *.db
 *.sqlite3
 
+#Docker
+Dockerfile
+
+# special code
+temp.py
+h54check.py
+
+
 # Local Config & Secrets
 # config.json (Temporarily allowed)
 .env
