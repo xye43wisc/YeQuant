@@ -302,5 +302,5 @@ def run_pipeline(is_test=True):
         logger.info("进程已正常退出。")
 
 if __name__ == "__main__":
-    run_pipeline(is_test=True)
+    run_pipeline(is_test=False)
     os._exit(0)
