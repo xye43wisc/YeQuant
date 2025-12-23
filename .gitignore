@@ -24,6 +24,7 @@ MANIFEST
 
 # Virtual Environment
 .YeQuantVenv/
+.venv/
 venv/
 env/
 ENV/
